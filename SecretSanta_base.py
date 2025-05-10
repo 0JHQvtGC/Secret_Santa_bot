@@ -170,7 +170,6 @@ def main():
         },
         fallbacks=[]
     )
-
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler('my_rooms', my_rooms))
     application.add_handler(CommandHandler('start', start))
