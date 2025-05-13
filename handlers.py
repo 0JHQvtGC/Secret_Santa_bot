@@ -28,22 +28,44 @@ async def join_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    key = update.message.text
+    key = update.message.text.strip()
     context.user_data['key'] = key
     con = sqlite3.connect("bot_history.db")
     cur = con.cursor()
-    room = cur.execute(f'''SELECT room_name FROM history WHERE room_key = "{key}"''').fetchall()[0]
-    context.user_data['room'] = room
-    con.close()
-    await update.message.reply_text("Введите свой никнейм:")
-    return ADD_USER
+    result = cur.execute(f'''
+        SELECT room_name FROM history WHERE room_key = ?
+    ''', (key,)).fetchall()
+
+    if len(result) > 0:
+        room = result[0]
+        context.user_data['room'] = room
+        await update.message.reply_text("Введите свой никнейм:")
+        return ADD_USER
+    else:
+        await update.message.reply_text("Комната с таким ключом не найдена. Попробуйте снова ввести правильный ключ.")
+        return GETTING_KEY
 
 
 async def handle_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.text
     context.user_data['username'] = username
-    await update.message.reply_text(f'Пользователь {username} добавлен в комнату "{context.user_data['room'][0]}"')
-    save_user(update.message.from_user.id, username, context.user_data['room'][0])
+    con = sqlite3.connect("bot_history.db")
+    cur = con.cursor()
+    existing_user = cur.execute('''
+        SELECT * FROM users 
+        WHERE user_id=? AND room=?
+    ''', (update.message.from_user.id, context.user_data['room'])).fetchone()
+    if existing_user is not None:
+        cur.execute('''
+            UPDATE users SET username=? WHERE user_id=? AND room=?
+        ''', (username, update.message.from_user.id, context.user_data['room']))
+        con.commit()
+        await update.message.reply_text(
+           f"Ваше имя успешно обновлено на '{username}' в комнате '{context.user_data['room']}'.")
+    else:
+        await update.message.reply_text(f"Пользователь {username} добавлен в комнату '{context.user_data['room']}'")
+        save_user(update.message.from_user.id, username, context.user_data['room'])
+    con.close()
     return ConversationHandler.END
 
 
@@ -81,7 +103,7 @@ async def handle_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Правила игры установлены.")
     key = create_key()
     context.user_data['key'] = key
-    await update.message.reply_text(f"Ключ для вашей комнаты: {key}.")
+    await update.message.reply_text(f"Ключ для вашей комнаты: {key}")
     await update.message.reply_text("Комната создана")
     save_room(update.message.from_user.id, context.user_data['room_name'], context.user_data['budget'],
                context.user_data['rules'], context.user_data['key'])
