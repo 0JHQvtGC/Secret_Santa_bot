@@ -39,9 +39,17 @@ def save_room(user_id, room_name, room_budget, room_rules, room_key):
 def save_user(user_id, username, room):
     conn = sqlite3.connect('bot_history.db')
     cursor = conn.cursor()
-    cursor.execute('''
-    INSERT INTO users (user_id, username, room)
-    VALUES (?, ?, ?)
-    ''', (user_id, username, room))
+    cursor.execute("SELECT * FROM users WHERE user_id=? AND room=?", (user_id, room))
+    existing_row = cursor.fetchone()
+    if existing_row is not None:
+        cursor.execute('''
+            UPDATE users SET username=?, room=?
+            WHERE user_id=? AND room=?
+        ''', (username, room, user_id, room))
+    else:
+        cursor.execute('''
+            INSERT INTO users (user_id, username, room)
+            VALUES (?, ?, ?)
+        ''', (user_id, username, room))
     conn.commit()
     conn.close()

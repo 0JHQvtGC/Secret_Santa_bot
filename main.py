@@ -10,15 +10,12 @@ logger = logging.getLogger(__name__)
 
 CREATING_GAME, GETTING_BUDGET, GETTING_RULES, GETTING_KEY, ADD_USER = range(5)
 
-
-create_db()
-
-
 def main():
     load_dotenv()
+    create_db()
     application = ApplicationBuilder().token(os.getenv('TOKEN')).build()
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('create', create_room), CommandHandler('join', join_room)],
+        entry_points=[CommandHandler('create', create_room), CommandHandler('start', start)],
         states={
             CREATING_GAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_game_creation)],
             GETTING_BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_budget)],

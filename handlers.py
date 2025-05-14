@@ -1,9 +1,10 @@
 from telegram import Update
-from telegram.ext import ConversationHandler, ContextTypes
+from telegram.ext import ConversationHandler, ContextTypes, CallbackContext
 from database import save_room, save_user
 import sqlite3
 from dotenv import load_dotenv
 import random
+import os
 
 load_dotenv()
 
@@ -11,20 +12,27 @@ CREATING_GAME, GETTING_BUDGET, GETTING_RULES, GETTING_KEY, ADD_USER = range(5)
 
 
 def create_key():
-    key = ''
-    values = [i for i in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890!@#$%&—_+=?.']
-    for _ in range(16):
-        key += random.choice(values)
-    return key
+    return ''.join(random.choice('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890') for _ in range(16))
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("/create - создание комнаты\n/my_rooms - история создания комнат\n/join - присоединиться")
-
-
-async def join_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Введите ключ от комнаты:")
-    return GETTING_KEY
+async def start(update: Update, context: CallbackContext):
+    if context.args:
+        key = context.args[0].strip()
+        with sqlite3.connect("bot_history.db") as conn:
+            cursor = conn.cursor()
+            result = cursor.execute('''
+                SELECT room_name FROM history WHERE room_key = ? LIMIT 1
+            ''', (key,)).fetchone()
+            if result:
+                room = result[0]
+                context.user_data['room'] = room
+                await update.message.reply_text("Введите свой никнейм:")
+                return ADD_USER
+            else:
+                await update.message.reply_text("Комната с таким ключом не найдена.")
+    else:
+        await update.message.reply_text(
+            "/create — создать комнату\n/my_rooms — список созданных вами комнат\n/join — присоединиться к существующей комнате")
 
 
 async def handle_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -35,8 +43,7 @@ async def handle_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = cur.execute(f'''
         SELECT room_name FROM history WHERE room_key = ?
     ''', (key,)).fetchall()
-
-    if len(result) > 0:
+    if result:
         room = result[0]
         context.user_data['room'] = room
         await update.message.reply_text("Введите свой никнейм:")
@@ -56,10 +63,7 @@ async def handle_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
         WHERE user_id=? AND room=?
     ''', (update.message.from_user.id, context.user_data['room'])).fetchone()
     if existing_user is not None:
-        cur.execute('''
-            UPDATE users SET username=? WHERE user_id=? AND room=?
-        ''', (username, update.message.from_user.id, context.user_data['room']))
-        con.commit()
+        save_user(update.message.from_user.id, username, context.user_data['room'])
         await update.message.reply_text(
            f"Ваше имя успешно обновлено на '{username}' в комнате '{context.user_data['room']}'.")
     else:
@@ -103,7 +107,7 @@ async def handle_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Правила игры установлены.")
     key = create_key()
     context.user_data['key'] = key
-    await update.message.reply_text(f"Ключ для вашей комнаты: {key}")
+    await update.message.reply_text(f"Ссылка-ключ для вашей комнаты: https://t.me/{os.getenv('USERNAME_BOT')}?start={key}.")
     await update.message.reply_text("Комната создана")
     save_room(update.message.from_user.id, context.user_data['room_name'], context.user_data['budget'],
                context.user_data['rules'], context.user_data['key'])
@@ -120,7 +124,6 @@ async def my_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rules = [i[0] for i in cur.execute(f'''SELECT room_rules FROM history WHERE user_id = {id}''').fetchall()]
     keys = [i[0] for i in cur.execute(f'''SELECT room_key FROM history WHERE user_id = {id}''').fetchall()]
     con.close()
-
     for room, budget, rule, key in zip(rooms, budgets, rules, keys):
         history += f"Комната: {room}\nБюджет: {budget}\nПравила: {rule}\nКлюч: {key}\n\n"
     await update.message.reply_text(history)
