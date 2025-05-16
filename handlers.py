@@ -8,7 +8,7 @@ import os
 
 load_dotenv()
 
-CREATING_GAME, GETTING_BUDGET, GETTING_RULES, GETTING_KEY, ADD_USER = range(5)
+CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, GET_STARTED = range(6)
 
 
 def create_key():
@@ -24,8 +24,8 @@ async def start(update: Update, context: CallbackContext):
                 SELECT room_name FROM history WHERE room_key = ? LIMIT 1
             ''', (key,)).fetchone()
             if result:
-                room = result[0]
-                context.user_data['room'] = room
+                context.user_data['room'] = result[0]
+                context.user_data['key'] = key
                 await update.message.reply_text("Введите свой никнейм:")
                 return ADD_USER
             else:
@@ -35,40 +35,28 @@ async def start(update: Update, context: CallbackContext):
             "/create — создать комнату\n/my_rooms — список созданных вами комнат\n/join — присоединиться к существующей комнате")
 
 
-async def handle_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    key = update.message.text.strip()
-    context.user_data['key'] = key
-    con = sqlite3.connect("bot_history.db")
-    cur = con.cursor()
-    result = cur.execute(f'''
-        SELECT room_name FROM history WHERE room_key = ?
-    ''', (key,)).fetchall()
-    if result:
-        room = result[0]
-        context.user_data['room'] = room
-        await update.message.reply_text("Введите свой никнейм:")
-        return ADD_USER
-    else:
-        await update.message.reply_text("Комната с таким ключом не найдена. Попробуйте снова ввести правильный ключ.")
-        return GETTING_KEY
-
-
 async def handle_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.text
     context.user_data['username'] = username
+    await update.message.reply_text("Расскажите о своих пожеланиях, чтобы помочь выбрать подарок")
+    return ADD_IDEAS
+
+
+async def handle_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ideas = update.message.text
     con = sqlite3.connect("bot_history.db")
     cur = con.cursor()
     existing_user = cur.execute('''
         SELECT * FROM users 
-        WHERE user_id=? AND room=?
-    ''', (update.message.from_user.id, context.user_data['room'])).fetchone()
+        WHERE user_id=? AND key=?
+    ''', (update.message.from_user.id, context.user_data['key'])).fetchone()
     if existing_user is not None:
-        save_user(update.message.from_user.id, username, context.user_data['room'])
+        save_user(update.message.from_user.id, context.user_data['username'], context.user_data['key'], ideas)
         await update.message.reply_text(
-           f"Ваше имя успешно обновлено на '{username}' в комнате '{context.user_data['room']}'.")
+           f"Ваше имя успешно обновлено на '{context.user_data['username']}' в комнате '{context.user_data['room']}'.")
     else:
-        await update.message.reply_text(f"Пользователь {username} добавлен в комнату '{context.user_data['room']}'")
-        save_user(update.message.from_user.id, username, context.user_data['room'])
+        await update.message.reply_text(f"Пользователь {context.user_data['username']} добавлен в комнату '{context.user_data['room']}'")
+        save_user(update.message.from_user.id, context.user_data['username'], context.user_data['key'], ideas)
     con.close()
     return ConversationHandler.END
 
@@ -125,5 +113,14 @@ async def my_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keys = [i[0] for i in cur.execute(f'''SELECT room_key FROM history WHERE user_id = {id}''').fetchall()]
     con.close()
     for room, budget, rule, key in zip(rooms, budgets, rules, keys):
-        history += f"Комната: {room}\nБюджет: {budget}\nПравила: {rule}\nКлюч: {key}\n\n"
+        history += f"Комната: {room}\nБюджет: {budget}\nПравила: {rule}\nСсылка-ключ: https://t.me/{os.getenv('USERNAME_BOT')}?start={key}\n\n"
     await update.message.reply_text(history)
+
+
+async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Введите название комнаты, где хотите начать игру:")
+    return GET_STARTED
+
+
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pass
