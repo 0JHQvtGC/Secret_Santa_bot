@@ -5,11 +5,12 @@ import sqlite3
 from dotenv import load_dotenv
 import random
 import os
+from openai import OpenAI
 
 
 load_dotenv()
 
-CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM, DELETE_STEP_ONE, DELETE_STEP_TWO, LEAVING_ROOM = range(9)
+CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM, DELETE_STEP_ONE, DELETE_STEP_TWO, LEAVING_ROOM, CREATE_IDEA_STEP_ONE = range(10)
 
 
 def create_key():
@@ -92,10 +93,9 @@ async def create_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_game_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     room_name = update.message.text
-    user_id = update.message.from_user.id
     con = sqlite3.connect("bot_history.db")
     cur = con.cursor()
-    cur.execute("SELECT * FROM history WHERE room_name=? AND user_id=?", (room_name, user_id))
+    cur.execute("SELECT * FROM history WHERE room_name=? AND user_id=?", (room_name, update.message.from_user.id))
     result = cur.fetchone()
     con.close()
     if result is not None:
@@ -289,4 +289,48 @@ async def handle_delete_room_step_two(update: Update, context: ContextTypes.DEFA
         "Удаление отменено.",
         reply_markup=ReplyKeyboardRemove()
     )
+    return ConversationHandler.END
+
+
+async def create_idea(update: Update, context: CallbackContext):
+    await update.message.reply_text("Введите название комнаты, в которой, для выпавшего вам человека, вы хотели бы сгенерировать идею :")
+    return CREATE_IDEA_STEP_ONE
+
+
+async def create_idea_step_one(update: Update, context: CallbackContext):
+    print(os.getenv('BASE_URL'), os.getenv('API_KEY'))
+    conn = sqlite3.connect('bot_history.db')
+    cur = conn.cursor()
+    cur.execute("SELECT room_key FROM history WHERE room_name=?", (update.message.text,))
+    result = cur.fetchone()
+    if result is None:
+        await update.message.reply_text("Комната не найдена.")
+        conn.close()
+        return ConversationHandler.END
+    room_key = result[0]
+    cur.execute("SELECT pair FROM users WHERE key=? AND user_id=?", (room_key, update.message.from_user.id))
+    result = cur.fetchone()
+    if result[0] == 'no pair':
+        await update.message.reply_text("Для использования этой функции вам следует дождаться начала игры.")
+        conn.close()
+        return ConversationHandler.END
+    pair_value = result[0]
+    cur.execute("SELECT ideas FROM users WHERE user_id=?", (pair_value,))
+    result = cur.fetchone()[0]
+    conn.close()
+    client = OpenAI(
+        base_url=os.getenv('BASE_URL'),
+        api_key=os.getenv('API_KEY'),
+    )
+    completion = client.chat.completions.create(
+        extra_body={},
+        model=os.getenv('MODEL'),
+        messages=[
+            {
+                "role": "user",
+                "content": f"Предложи идеи для подарка человеку, кто указал, что его интересы это {result}."
+            }
+        ]
+    )
+    await update.message.reply_text(completion.choices[0].message.content)
     return ConversationHandler.END
