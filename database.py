@@ -56,3 +56,17 @@ def save_user(user_id, username, key, ideas, pair="no pair"):
         ''', (user_id, username, key, ideas, pair))
     conn.commit()
     conn.close()
+
+
+def delete_by_key(key):
+    conn = sqlite3.connect('bot_history.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM history WHERE room_key=?", (key,))
+        cursor.execute("DELETE FROM users WHERE key=?", (key,))
+        conn.commit()
+    except Exception as e:
+        print(e)
+        conn.rollback()
+    finally:
+        conn.close()
