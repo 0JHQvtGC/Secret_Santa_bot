@@ -9,7 +9,7 @@ import os
 
 load_dotenv()
 
-CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM = range(6)
+CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM, LEAVING_ROOM = range(7)
 
 
 def create_key():
@@ -32,8 +32,7 @@ async def start(update: Update, context: CallbackContext):
             else:
                 await update.message.reply_text("Комната с таким ключом не найдена.")
     else:
-        await update.message.reply_text(
-            "/create — создать комнату\n/my_rooms — список созданных вами комнат\n/start_game - начало игры")
+        await update.message.reply_text('Данный бот для организации игры "Тайный Санта"')
 
 
 async def handle_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -57,8 +56,9 @@ async def handle_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
            f"Ваше имя успешно обновлено на '{context.user_data['username']}' в комнате '{context.user_data['room']}'.")
     else:
         rules = cur.execute(f"SELECT room_rules FROM history WHERE room_key='{context.user_data['key']}'").fetchall()[0][0]
+        budget = cur.execute(f"SELECT room_budget FROM history WHERE room_key='{context.user_data['key']}'").fetchall()[0][0]
         await update.message.reply_text(f"Пользователь {context.user_data['username']} добавлен в комнату '{context.user_data['room']}'")
-        await update.message.reply_text("Правила игры:\n" + rules)
+        await update.message.reply_text(f"Бюджет игры: {budget}\nПравила игры: {rules}")
         save_user(update.message.from_user.id, context.user_data['username'], context.user_data['key'], ideas)
     con.close()
     return ConversationHandler.END
@@ -94,6 +94,27 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return GETTING_RULES
 
 
+async def leave_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Введите название комнаты, которую хотите покинуть")
+    return LEAVING_ROOM
+
+
+async def handle_leaving(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    room = update.message.text
+    id = update.message.from_user.id
+    con = sqlite3.connect("bot_history.db")
+    cur = con.cursor()
+    rooms = [i[0] for i in cur.execute(f'''SELECT room_name FROM history WHERE user_id = {id}''').fetchall()]
+    if room not in rooms:
+        await update.message.reply_text("Комната с таким названием не найдена")
+    else:
+        key = cur.execute(f"SELECT room_key FROM history WHERE room_name='{room}'").fetchall()[0][0]
+        cur.execute(f"DELETE FROM users WHERE key='{key}' AND user_id={id}")
+        await update.message.reply_text("Вы покинули комнату " + room)
+    con.close()
+    return ConversationHandler.END
+
+
 async def handle_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rules = update.message.text
     context.user_data['rules'] = rules
@@ -108,7 +129,6 @@ async def handle_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def my_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    history = "Ваши комнаты:\n\n"
     id = update.message.from_user.id
     con = sqlite3.connect("bot_history.db")
     cur = con.cursor()
@@ -116,10 +136,30 @@ async def my_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     budgets = [i[0] for i in cur.execute(f'''SELECT room_budget FROM history WHERE user_id = {id}''').fetchall()]
     rules = [i[0] for i in cur.execute(f'''SELECT room_rules FROM history WHERE user_id = {id}''').fetchall()]
     keys = [i[0] for i in cur.execute(f'''SELECT room_key FROM history WHERE user_id = {id}''').fetchall()]
+    if len(rooms) == 0:
+        await update.message.reply_text("У вас нет созданных Вами комнат")
+    else:
+        history = "Созданные вами комнаты:\n\n"
+        for room, budget, rule, key in zip(rooms, budgets, rules, keys):
+            history += f"Комната: {room}\nБюджет: {budget}\nПравила: {rule}\nСсылка-ключ: https://t.me/{os.getenv('USERNAME_BOT')}?start={key}\n\n"
+        await update.message.reply_text(history)
+    keys = [i[0] for i in cur.execute(f'''SELECT key FROM users WHERE user_id = {id}''').fetchall()]
+    if len(keys) == 0:
+        await update.message.reply_text("У Вас нет комнат, где Вы являетесь участником игры")
+    else:
+        history = "Комнаты, в которых Вы участвуете\n\n"
+        for i in keys:
+            data = [i for i in cur.execute(f"SELECT room_name, room_budget, room_rules, started FROM history WHERE room_key = '{i}'").fetchall()]
+            for values in data:
+                history += f"Комната: {values[0]}\nБюджет: {values[1]}\nПравила: {values[2]}\n"
+                if values[3] == "yes":
+                    pair = cur.execute(f"SELECT pair from users where user_id={id} and key='{i}'").fetchall()[0]
+                    username_pair = cur.execute(f"SELECT Username from users where user_id={pair[0]} and key='{i}'").fetchall()[0]
+                    history += f"Игра началась. Вы должны сделать подарок {username_pair[0]}\n\n"
+                else:
+                    history += "Игра ещё не началась\n\n"
+        await update.message.reply_text(history)
     con.close()
-    for room, budget, rule, key in zip(rooms, budgets, rules, keys):
-        history += f"Комната: {room}\nБюджет: {budget}\nПравила: {rule}\nСсылка-ключ: https://t.me/{os.getenv('USERNAME_BOT')}?start={key}\n\n"
-    await update.message.reply_text(history)
 
 
 async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -136,48 +176,72 @@ async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    room_name = update.message.text
-    id = update.message.from_user.id
-    if room_name in context.user_data['user_rooms']:
-        con = sqlite3.connect("bot_history.db")
-        cur = con.cursor()
-        started = cur.execute(f"SELECT started FROM history WHERE user_id={id} AND room_name='{room_name}'").fetchall()[0][0]
-        if started == "no":
-            key = cur.execute(f"SELECT room_key FROM history WHERE user_id={id} AND room_name='{room_name}'").fetchall()[0][0]
-            users_data = cur.execute(f"SELECT user_id, username FROM users WHERE key = '{key}'").fetchall()
-            users = [i[0] for i in users_data]
-            usernames = [i[1] for i in users_data]
-            if len(users) < 2:
-                print(len(users))
-                print(users)
-                await update.message.reply_text("Недостаточно участников для начала игры")
-            else:
-                pairs = users[:]
-                result = {}
-                for person in users:
-                    new_pairs = [i for i in pairs if i != person]
-                    man = random.choice(new_pairs)
-                    result[person] = man
-                    pairs.remove(man)
-                file = open("users_data.txt", "w", encoding="utf-8")
-                for user in result:
-                    cur.execute(f"UPDATE users SET pair='{result[user]}' WHERE user_id = {user} AND key='{key}'")
-                    ideas = cur.execute(f"SELECT ideas FROM users WHERE user_id = {result[user]} AND key='{key}'").fetchall()[0][0]
-                    file.write(f"{usernames[users.index(user)]} (id {user}) делает подарок {usernames[users.index(result[user])]}"
-                               f" (id {users[usernames.index(usernames[users.index(result[user])])]})\n"
-                               f"Пожелания {usernames[users.index(result[user])]}: {ideas}\n\n")
-                    await context.bot.send_message(chat_id=user,
-                                                   text=f"Игра началась. Вы должны сделать подарок пользователю"
-                                                        f" {usernames[users.index(result[user])]}.\n"
-                                                        f"Возможные идеи для подарка {usernames[users.index(result[user])]}: {ideas}")
-                file.close()
-                cur.execute(f"UPDATE history SET started='yes' WHERE room_key = '{key}'")
-            con.close()
-            with open("users_data.txt", 'rb') as file:
-                await update.message.reply_text("Список участников игры:")
-                await context.bot.send_document(id, document=file)
-        else:
-            await update.message.reply_text("Игра уже началась")
-    else:
-        await update.message.reply_text("Комната с таким названием не найдена")
+    room_name = update.message.text.strip()
+    user_id = update.message.from_user.id
+    if room_name not in context.user_data.get('user_rooms', []):
+        await update.message.reply_text("Комната с таким названием не найдена.")
+        return ConversationHandler.END
+    conn = sqlite3.connect("bot_history.db")
+    cursor = conn.cursor()
+    started = cursor.execute(
+        "SELECT started FROM history WHERE user_id=? AND room_name=?",
+        (user_id, room_name)
+    ).fetchone()
+    if started and started[0].strip().lower() == "yes":
+        await update.message.reply_text("Игра уже началась.")
+        return ConversationHandler.END
+    key = cursor.execute(
+        "SELECT room_key FROM history WHERE user_id=? AND room_name=?",
+        (user_id, room_name)
+    ).fetchone()[0]
+    users_data = cursor.execute(
+        "SELECT user_id, username FROM users WHERE key=?",
+        (key,)
+    ).fetchall()
+    if len(users_data) < 2:
+        await update.message.reply_text("Недостаточно участников для начала игры.")
+        return ConversationHandler.END
+    users = [row[0] for row in users_data]
+    usernames = dict((uid, name) for uid, name in users_data)
+    pairs = users.copy()
+    result = {}
+    for person in users:
+        available_partners = [p for p in pairs if p != person]
+        partner = random.choice(available_partners)
+        result[person] = partner
+        pairs.remove(partner)
+    stats = ""
+    for user in result:
+        partner_id = result[user]
+        partner_username = usernames[partner_id]
+        ideas = cursor.execute(
+            "SELECT ideas FROM users WHERE user_id=? AND key=?",
+            (partner_id, key)
+        ).fetchone()[0]
+        cursor.execute(
+            "UPDATE users SET pair=? WHERE user_id=? AND key=?",
+            (partner_id, user, key)
+        )
+        message = (
+            f"Игра началась.\nВы должны сделать подарок пользователю "
+            f"{partner_username}. Возможные идеи для подарка:\n{ideas}"
+        )
+        await context.bot.send_message(chat_id=user, text=message)
+
+        stats += (
+            f"{usernames[user]} (id {user}) делает подарок {partner_username} (id {partner_id}).\n"
+            f"Пожелания {partner_username}: {ideas}\n\n"
+        )
+    filename = "users_data.txt"
+    with open(filename, "w", encoding="utf-8") as file:
+        file.write(stats)
+    cursor.execute(
+        "UPDATE history SET started='yes' WHERE room_key=?",
+        (key,)
+    )
+    await update.message.reply_text("Список участников игры:")
+    await context.bot.send_document(user_id, document=open(filename, 'rb'))
+    os.remove(filename)
+    conn.commit()
+    conn.close()
     return ConversationHandler.END
