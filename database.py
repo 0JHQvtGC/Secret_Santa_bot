@@ -14,7 +14,6 @@ def create_db():
             started TEXT
         )
     ''')
-
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER,

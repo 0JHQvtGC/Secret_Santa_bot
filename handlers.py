@@ -1,6 +1,6 @@
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import ConversationHandler, ContextTypes, CallbackContext
-from database import save_room, save_user
+from database import save_room, save_user, delete_by_key
 import sqlite3
 from dotenv import load_dotenv
 import random
@@ -9,7 +9,7 @@ import os
 
 load_dotenv()
 
-CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM, LEAVING_ROOM = range(7)
+CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM, DELETE_STEP_ONE, DELETE_STEP_TWO, LEAVING_ROOM = range(9)
 
 
 def create_key():
@@ -32,7 +32,29 @@ async def start(update: Update, context: CallbackContext):
             else:
                 await update.message.reply_text("Комната с таким ключом не найдена.")
     else:
-        await update.message.reply_text('Данный бот для организации игры "Тайный Санта"')
+        await update.message.reply_text(
+            "Данный бот для организации игры Тайный Санта")
+
+
+async def leave_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Введите название комнаты, которую хотите покинуть")
+    return LEAVING_ROOM
+
+
+async def handle_leaving(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    room = update.message.text
+    id = update.message.from_user.id
+    con = sqlite3.connect("bot_history.db")
+    cur = con.cursor()
+    rooms = [i[0] for i in cur.execute(f'''SELECT room_name FROM history WHERE user_id = {id}''').fetchall()]
+    if room not in rooms:
+        await update.message.reply_text("Комната с таким названием не найдена")
+    else:
+        key = cur.execute(f"SELECT room_key FROM history WHERE room_name='{room}'").fetchall()[0][0]
+        cur.execute(f"DELETE FROM users WHERE key='{key}' AND user_id={id}")
+        await update.message.reply_text("Вы покинули комнату " + room)
+    con.close()
+    return ConversationHandler.END
 
 
 async def handle_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -56,9 +78,8 @@ async def handle_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
            f"Ваше имя успешно обновлено на '{context.user_data['username']}' в комнате '{context.user_data['room']}'.")
     else:
         rules = cur.execute(f"SELECT room_rules FROM history WHERE room_key='{context.user_data['key']}'").fetchall()[0][0]
-        budget = cur.execute(f"SELECT room_budget FROM history WHERE room_key='{context.user_data['key']}'").fetchall()[0][0]
         await update.message.reply_text(f"Пользователь {context.user_data['username']} добавлен в комнату '{context.user_data['room']}'")
-        await update.message.reply_text(f"Бюджет игры: {budget}\nПравила игры: {rules}")
+        await update.message.reply_text("Правила игры:\n" + rules)
         save_user(update.message.from_user.id, context.user_data['username'], context.user_data['key'], ideas)
     con.close()
     return ConversationHandler.END
@@ -92,27 +113,6 @@ async def handle_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Бюджет установлен: {budget}")
     await update.message.reply_text("Введите правила игры. Также укажите в них длительность игры и локацию, где нужно оставить подарки.")
     return GETTING_RULES
-
-
-async def leave_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Введите название комнаты, которую хотите покинуть")
-    return LEAVING_ROOM
-
-
-async def handle_leaving(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    room = update.message.text
-    id = update.message.from_user.id
-    con = sqlite3.connect("bot_history.db")
-    cur = con.cursor()
-    rooms = [i[0] for i in cur.execute(f'''SELECT room_name FROM history WHERE user_id = {id}''').fetchall()]
-    if room not in rooms:
-        await update.message.reply_text("Комната с таким названием не найдена")
-    else:
-        key = cur.execute(f"SELECT room_key FROM history WHERE room_name='{room}'").fetchall()[0][0]
-        cur.execute(f"DELETE FROM users WHERE key='{key}' AND user_id={id}")
-        await update.message.reply_text("Вы покинули комнату " + room)
-    con.close()
-    return ConversationHandler.END
 
 
 async def handle_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -244,4 +244,49 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.remove(filename)
     conn.commit()
     conn.close()
+    return ConversationHandler.END
+
+async def delete_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Введите название комнаты, которую хотите удалить:")
+    return DELETE_STEP_ONE
+
+
+async def handle_delete_room_step_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['room_name'] = update.message.text
+    con = sqlite3.connect("bot_history.db")
+    cur = con.cursor()
+    existing_user = cur.execute(''' SELECT * FROM history WHERE user_id=? AND room_name=? ''',
+                                (update.message.from_user.id, context.user_data['room_name'])).fetchone()
+    con.close()
+
+    if existing_user is None:
+        await update.message.reply_text('Комната не найдена')
+        return ConversationHandler.END
+    keyboard = [[KeyboardButton(text="Да"), KeyboardButton(text="Нет")]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+
+    await update.message.reply_text(
+        f'Вы уверены, что хотите удалить комнату {context.user_data["room_name"]}?',
+        reply_markup=reply_markup
+    )
+    return DELETE_STEP_TWO
+
+
+async def handle_delete_room_step_two(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer = update.message.text.lower()
+    if answer == 'да':
+        con = sqlite3.connect("bot_history.db")
+        cur = con.cursor()
+        key = cur.execute(
+            f""" SELECT room_key FROM history WHERE user_id={update.message.from_user.id} AND room_name='{context.user_data['room_name']}' """).fetchall()[
+            0][0]
+        con.close()
+        delete_by_key(key)
+        await update.message.reply_text(f'Комната "{context.user_data["room_name"]}" успешно удалена.',
+                                        reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "Удаление отменено.",
+        reply_markup=ReplyKeyboardRemove()
+    )
     return ConversationHandler.END
