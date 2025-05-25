@@ -69,3 +69,19 @@ def delete_by_key(key):
         conn.rollback()
     finally:
         conn.close()
+
+
+def get_info_using_user_id(user_id):
+    conn = sqlite3.connect('bot_history.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT key FROM users WHERE user_id=? AND pair=?",
+                   (user_id, 'no pair'))
+    keys = [row[0] for row in cursor.fetchall()]
+    if not keys:
+        conn.close()
+        return [], []
+    placeholders = ', '.join(['?'] * len(keys))
+    cursor.execute(f"SELECT room_name FROM history WHERE room_key IN ({placeholders})", tuple(keys))
+    rooms = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return keys, rooms

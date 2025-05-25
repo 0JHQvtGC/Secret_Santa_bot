@@ -1,6 +1,6 @@
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from telegram.ext import ConversationHandler, ContextTypes, CallbackContext
-from database import save_room, save_user, delete_by_key
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ConversationHandler, ContextTypes, CallbackContext, CallbackQueryHandler
+from database import save_room, save_user, delete_by_key, get_info_using_user_id
 import sqlite3
 from dotenv import load_dotenv
 import random
@@ -10,7 +10,7 @@ from openai import OpenAI
 
 load_dotenv()
 
-CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM, DELETE_STEP_ONE, DELETE_STEP_TWO, LEAVING_ROOM, CREATE_IDEA_STEP_ONE = range(10)
+CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM, DELETE_STEP_ONE, DELETE_STEP_TWO, CREATE_IDEA = range(9)
 
 
 def create_key():
@@ -23,7 +23,7 @@ async def start(update: Update, context: CallbackContext):
         with sqlite3.connect("bot_history.db") as conn:
             cursor = conn.cursor()
             result = cursor.execute('''
-                SELECT room_name FROM history WHERE room_key = ? LIMIT 1
+                SELECT room_name FROM history WHERE room_key = ?
             ''', (key,)).fetchone()
             if result:
                 context.user_data['room'] = result[0]
@@ -31,30 +31,81 @@ async def start(update: Update, context: CallbackContext):
                 await update.message.reply_text("Введите свой никнейм:")
                 return ADD_USER
             else:
-                await update.message.reply_text("Комната с таким ключом не найдена.")
+                await update.message.reply_text("Приглашение не действительно.")
     else:
         await update.message.reply_text(
             "Данный бот для организации игры Тайный Санта")
 
 
 async def leave_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Введите название комнаты, которую хотите покинуть")
-    return LEAVING_ROOM
+    keys, rooms = get_info_using_user_id(update.message.from_user.id)
+    if not keys:
+        await update.message.reply_text("Вы не состоите в комнатах.")
+        return ConversationHandler.END
+    keyboard = [
+            [InlineKeyboardButton(room, callback_data=key)]
+            for key, room in zip(keys, rooms)
+        ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Выберите ту комнату, которую хотите покинуть. Для получения информации о каждой из доступных вам комнат нажмите на кнопку с названием этой комнаты.", reply_markup=reply_markup)
+    context.user_data['rooms_list'] = {'keys': keys, 'rooms': rooms}
+    print(context.user_data)
 
 
 async def handle_leaving(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    room = update.message.text
-    id = update.message.from_user.id
-    con = sqlite3.connect("bot_history.db")
-    cur = con.cursor()
-    rooms = [i[0] for i in cur.execute(f'''SELECT room_name FROM history WHERE user_id = {id}''').fetchall()]
-    if room not in rooms:
-        await update.message.reply_text("Комната с таким названием не найдена")
+    query = update.callback_query
+    await query.answer()
+    rooms_list = context.user_data['rooms_list']
+    if query.data in rooms_list['keys'] or query.data == 'back':
+        conn = sqlite3.connect('bot_history.db')
+        cur = conn.cursor()
+        cur.execute('''
+                SELECT room_name, room_budget, room_rules, room_key
+                FROM history
+                WHERE room_key = ? AND started = ?
+            ''', (query.data, 'no'))
+        result = cur.fetchone()
+        conn.close()
+        if result is None:
+            updated_keys, updated_rooms = get_info_using_user_id(update.effective_user.id)
+            if not updated_keys:
+                await query.edit_message_text("Вы не состоите в комнатах.")
+                return ConversationHandler.END
+            new_keyboard = [
+                [InlineKeyboardButton(room, callback_data=key)]
+                for key, room in zip(updated_keys, updated_rooms)
+            ]
+            reply_markup = InlineKeyboardMarkup(new_keyboard)
+            await query.edit_message_reply_markup(reply_markup=reply_markup)
+            return ConversationHandler.END
+        room_name, room_budget, room_rules, _ = result
+        new_keyboard = [[InlineKeyboardButton('Удалить комнату', callback_data='delete_' + query.data)], [InlineKeyboardButton('Назад', callback_data='back')]]
+        if query.message.text != f"Название комнаты: {room_name}\nБюджет комнаты: {room_budget}\nПравила комнаты:\n{room_rules}" or \
+                query.message.reply_markup != InlineKeyboardMarkup(new_keyboard):
+            await query.edit_message_text(
+                text=f"Название комнаты: {room_name}\nБюджет комнаты: {room_budget}\nПравила комнаты:\n{room_rules}",
+                reply_markup=InlineKeyboardMarkup(new_keyboard))
     else:
-        key = cur.execute(f"SELECT room_key FROM history WHERE room_name='{room}'").fetchall()[0][0]
-        cur.execute(f"DELETE FROM users WHERE key='{key}' AND user_id={id}")
-        await update.message.reply_text("Вы покинули комнату " + room)
-    con.close()
+        conn = sqlite3.connect('bot_history.db')
+        cur = conn.cursor()
+        cur.execute('''
+                SELECT room_name, room_budget, room_rules, room_key
+                FROM history
+                WHERE room_key = ?
+            ''', (query.data.split('_')[1],))
+        result = cur.fetchone()
+        if result is None:
+            updated_keys, updated_rooms = get_info_using_user_id(query.from_user.id)
+            if not updated_keys:
+                await query.edit_message_text("Вы не состоите в комнатах.")
+            conn.close()
+            return ConversationHandler.END
+        cur.execute("DELETE FROM users WHERE key=? AND user_id=?", (query.data.split('_')[1], update.effective_user.id))
+        room = cur.execute("SELECT room_name FROM history WHERE room_key=?", (query.data.split('_')[1],)).fetchone()
+        conn.commit()
+        conn.close()
+        await query.edit_message_text(text=f'Вы покинули комнату {room}', reply_markup=None)
     return ConversationHandler.END
 
 
@@ -189,6 +240,7 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ).fetchone()
     if started and started[0].strip().lower() == "yes":
         await update.message.reply_text("Игра уже началась.")
+        conn.close()
         return ConversationHandler.END
     key = cursor.execute(
         "SELECT room_key FROM history WHERE user_id=? AND room_name=?",
@@ -200,6 +252,7 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ).fetchall()
     if len(users_data) < 2:
         await update.message.reply_text("Недостаточно участников для начала игры.")
+        conn.close()
         return ConversationHandler.END
     users = [row[0] for row in users_data]
     usernames = dict((uid, name) for uid, name in users_data)
@@ -294,11 +347,10 @@ async def handle_delete_room_step_two(update: Update, context: ContextTypes.DEFA
 
 async def create_idea(update: Update, context: CallbackContext):
     await update.message.reply_text("Введите название комнаты, в которой, для выпавшего вам человека, вы хотели бы сгенерировать идею :")
-    return CREATE_IDEA_STEP_ONE
+    return CREATE_IDEA
 
 
-async def create_idea_step_one(update: Update, context: CallbackContext):
-    print(os.getenv('BASE_URL'), os.getenv('API_KEY'))
+async def handle_create_idea(update: Update, context: CallbackContext):
     conn = sqlite3.connect('bot_history.db')
     cur = conn.cursor()
     cur.execute("SELECT room_key FROM history WHERE room_name=?", (update.message.text,))
@@ -318,6 +370,9 @@ async def create_idea_step_one(update: Update, context: CallbackContext):
     cur.execute("SELECT ideas FROM users WHERE user_id=?", (pair_value,))
     result = cur.fetchone()[0]
     conn.close()
+    await update.message.reply_text("Идёт обработка запроса, ожидайте...")
+    query = update.callback_query
+    await query.answer()
     client = OpenAI(
         base_url=os.getenv('BASE_URL'),
         api_key=os.getenv('API_KEY'),
@@ -332,5 +387,5 @@ async def create_idea_step_one(update: Update, context: CallbackContext):
             }
         ]
     )
-    await update.message.reply_text(completion.choices[0].message.content)
+    await query.edit_message_text(text=completion.choices[0].message.content)
     return ConversationHandler.END

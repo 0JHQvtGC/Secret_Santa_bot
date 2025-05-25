@@ -9,7 +9,7 @@ from database import create_db
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM, DELETE_STEP_ONE, DELETE_STEP_TWO, LEAVING_ROOM, CREATE_IDEA_STEP_ONE = range(10)
+CREATING_GAME, GETTING_BUDGET, GETTING_RULES, ADD_USER, ADD_IDEAS, WAITING_ROOM, DELETE_STEP_ONE, DELETE_STEP_TWO, CREATE_IDEA = range(9)
 
 def main():
     load_dotenv()
@@ -28,8 +28,7 @@ def main():
             WAITING_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start)],
             DELETE_STEP_ONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_room_step_one)],
             DELETE_STEP_TWO: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_room_step_two)],
-            LEAVING_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_leaving)],
-            CREATE_IDEA_STEP_ONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_idea_step_one)]
+            CREATE_IDEA: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_create_idea)],
         },
         fallbacks=[]
     )
@@ -41,6 +40,7 @@ def main():
     application.add_handler(CommandHandler('delete_room', delete_room))
     application.add_handler(CommandHandler('leave_room', leave_room))
     application.add_handler(CommandHandler('create_idea', create_idea))
+    application.add_handler(CallbackQueryHandler(handle_leaving))
     application.run_polling()
 
 
